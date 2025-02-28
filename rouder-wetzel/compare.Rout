@@ -1,0 +1,105 @@
+
+R version 2.10.1 (2009-12-14)
+Copyright (C) 2009 The R Foundation for Statistical Computing
+ISBN 3-900051-07-0
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+Loading required package: MCMCpack
+Loading required package: coda
+Loading required package: lattice
+Loading required package: MASS
+Loading required package: grDevices
+Loading required package: graphics
+Loading required package: stats
+Loading required package: utils
+##
+## Markov Chain Monte Carlo Package (MCMCpack)
+## Copyright (C) 2003-2012 Andrew D. Martin, Kevin M. Quinn, and Jong Hee Park
+##
+## Support provided by the U.S. National Science Foundation
+## (Grants SES-0350646 and SES-0350613)
+##
+Creating a new generic function for "plot" in ".GlobalEnv"
+/home/jeff/svn/bfAov
+[Previously saved workspace restored]
+
+> library('MCMCpack')
+> 
+> bf0 = function(t,n)
++ (1+t^2/(n-1))^(-n/2)
+> 
+> prior=function(g,n) dinvgamma(g,.5,n/2)
+> 
+> bf1a=function(g,t,n)
++ (1+g)^(-.5)*(1+t^2/((1+g)*(n-1)))^(-n/2)
+> 
+> joint=function(g,t,n)
++ prior(g,n)*bf1a(g,t,n)
+> 
+> bf1= function(t,n)
++ integrate(joint,lower=0,upper=Inf,t=t,n=n)
+> 
+> bf=function(t,n) bf0(t,n)/bf1(t,n)$value
+> 
+> bic=function(t,n) sqrt(n)*(1+t^2/(n-1))^(-n/2)
+> 
+> unit=function(t,n)  bf0(t,n)/bf1a(n,t,n)
+> 
+> #############################
+> 
+> target=function(t,b,n)
++ return((bf(t,n)-b)^2)
+> 
+> pdf('compare.pdf',width=12,height=6)
+> par(par.2pan)
+> 
+> v.lab=c(5,10,20,50,100,200,500,1000,2000,5000)
+> N=c(seq(5,20,1),seq(25,100,5),seq(200,1000,100),2000,5000)
+> x.lab=log(v.lab)
+> x=log(N)
+> g1=N
+> g2=g1
+> g3=g1
+> for (i in 1:length(N))
++ {
++ g1[i]=optimize(target,interval=c(0,10),b=1/3,n=N[i])$minimum
++ g2[i]=optimize(target,interval=c(0,10),b=1/10,n=N[i])$minimum
++ g3[i]=optimize(target,interval=c(0,10),b=1/30,n=N[i])$minimum
++ }
+> t=qt(.975,N-1)
+> 
+> plot(x,g1,axes=F,ylim=c(1.5,6),typ='l',xlim=log(c(5,20000)),xlab="Sample Size",ylab="Critical t-value") 
+> axis(1,at=x.lab,label=v.lab) 
+> axis(2)
+> lines(x,g2)
+> lines(x,g3)
+> lines(x,t)
+> text(log(5600),g1[length(g1)],expression(B[10]==3),adj=0)
+> text(log(5600),g2[length(g2)],expression(B[10]==10),adj=0)
+> text(log(5600),g3[length(g3)],expression(B[10]==30),adj=0)
+> text(log(5600),1.96,expression(alpha==.05),adj=0)
+> box()
+> mtext(side=3,'A.',cex=1.3,adj=0)
+> 
+> 
+> 
+> load('ej-graph.RData')
+Error in readChar(con, 5L, useBytes = TRUE) : cannot open the connection
+Calls: load -> readChar
+In addition: Warning message:
+In readChar(con, 5L, useBytes = TRUE) :
+  cannot open compressed file 'ej-graph.RData', probable reason 'No such file or directory'
+Execution halted

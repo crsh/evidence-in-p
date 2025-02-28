@@ -1,0 +1,1088 @@
+---
+title: "What's in a $p$-value?"
+subtitle: "Why do we see different deviations between JZS and JAB in the independent sample $t$-test"
+author: "Frederik Aust"
+date: "`r Sys.Date()`"
+
+toc: true
+number-sections: true
+reference-location: margin
+
+highlight-style: github
+theme: lumen
+
+execute:
+  keep-md: true
+  echo: true
+
+format:
+  html:
+    standalone: true
+    embed-resources: true
+    self-contained: true
+    link-external-icon: true
+    citations-hover: true
+    footnotes-hover: true
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library("dplyr")
+library("tidyr")
+
+library("BayesFactor")
+
+library("ggplot2")
+```
+
+
+```{r}
+#| label: load-data
+
+p_data <- readRDS("./merged_p_data-deviations.rds")
+p_data2 <- readRDS("./merged_p_data.rds")
+
+bf_labels <- c("10", "3", "1", "1/3", "1/10", "1/30")
+bf_breaks <- sapply(c(bf_labels), \(x) eval(parse(text = x)))
+```
+
+```{r}
+#| fig-height: 7
+#| fig-width: 7.7
+
+(p_data |>
+  ggplot() +
+    aes(y = bf01) +
+    geom_point(aes(x = jab, fill = neff, shape = "jab"), color = "white", size = 3) +
+    geom_abline(slope = 1, intercept = 0, linetype = "22") +
+    scale_shape_manual(values = c(21, 24), labels = c(bquote("JAB"["01"]), bquote("One-sided"~italic(p))), name = "\nApproximation", guide = guide_legend(override.aes = list(fill = "black", size = 4), reverse = TRUE)) +
+    scale_fill_viridis_c(option = "F", begin = 0.3, end = 0.8, direction = -1, trans = "log", breaks = c(2, 5, 10, 20, 50, 125, 300), name = "\nn") +
+    scale_x_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+    ) +
+    scale_y_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+    ) +
+    coord_fixed(ratio = 1) +
+    labs(x = "Approximation", y = bquote("JZS-"*BF["01"])) +
+    facet_wrap(~ type, ncol = 2) +
+    papaja::theme_apa(base_size = 16, box = TRUE) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1)
+      , legend.box = "horizontal"
+      , legend.title = element_text(hjust = 0.5)
+      , legend.margin = margin(0, 4, 0, 4)
+    )) |>
+    lemon::reposition_legend(
+      position = "center"
+      , panel = "panel-2-2"
+    )
+```
+
+If we just plot reasonably large effective sample sizes ($n_\text{eff} >= 25$) the difference between one- and two-sample $t$-tests is much smaller, but still there.
+It can't just be about differences in sample size.
+
+```{r}
+lbf_lm <- dplyr::mutate(
+  p_data
+  , ljab = log(jab)
+) |>
+  lm(
+    log(bf01) ~ log(jab) * scale(neff, scale = FALSE) * type
+    , data = _
+  )
+
+car::Anova(lbf_lm, type = 3) |>
+  knitr::kable()
+
+ggeffects::ggpredict(
+  lbf_lm
+  , terms = c("jab [all]", "neff [2, 5, 10, 25]",  "type")
+  , back_transform = TRUE
+) |>
+  plot(rawdata = TRUE) +
+    geom_abline(intercept = 0, slope = 1, linetype = "22") +
+    scale_x_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+    ) +
+    scale_y_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+      , limits = c(1/50, 10)
+    ) +
+    facet_wrap(~ facet, ncol = 2) +
+    papaja::theme_apa()
+```
+
+
+From inspecting the forumla for the JZS-Bayes factor (Rouder et al., 2009), we see that both effective sample size (here $N$) and the degrees of freedom $\nu$ factor in the calculation.
+
+![](./eq-jzs-bf.png)
+
+The numerator in this equation is simply the likelihood ratio.
+We see in the denominator that differences in effective sample size can be compensated by adjustments to the prior scale $g' = g \frac{N_a}{N_b}$.
+
+```{r}
+#| eval: false
+mutate(
+  p_data
+  , p = cut(p, breaks = c(0.5, p_boundaries))
+) |>
+summarize(
+  n = median(N)
+  , .by = c(p, type)
+) |>
+  ggplot() +
+  aes(x = p, y = n, fill = type) +
+  geom_col(position = position_dodge2())
+```
+
+Assuming a balanced design for the independent samples the following figure shows the bias of JAB relative to the JZS-Bayes factor as a function of $t$ but for the same effective sample size $n_\text{eff}$---comparisons are between different sample sizes ($N = n_1 + n_2$ vs. $N = n_1/2$) and different $p$-values.
+
+
+```{r}
+sim <- expand.grid(
+  t = seq(0, 4, 0.1)
+  , n1 = c(5, 10, 30, 100, 300, 1000)
+) |>
+  dplyr::mutate(
+    n2 = n1
+  ) |>
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    jzs_2 = exp(BayesFactor::ttest.tstat(t, n1, n2)$bf)
+    , p_2 = 2 * (1-pt(t, df = n1 + n2 - 2))
+    , neff = jab::ess(n1, n2)
+    , jab_2 = 1/jab:::.jab01_w_a_n(qnorm(p_2/2)^2, a = 1, n = neff)
+  ) |>
+  dplyr::mutate(
+    jzs_1 = exp(BayesFactor::ttest.tstat(t, n1/2)$bf)
+    , p_1 = 2 * (1-pt(t, df = n1/2 - 1))
+    , jab_1 = 1/jab:::.jab01_w_a_n(qnorm(p_1/2)^2, a = 1, n = n1/2)
+  ) |>
+  tidyr::pivot_longer(cols = c(jzs_2, jzs_1, jab_2, jab_1), names_to = "estimate", values_to = "bf10") |>
+  tidyr::separate_wider_delim(estimate, delim = "_", names = c("estimate", "sample")) |>
+  tidyr::pivot_wider(names_from = estimate, values_from = bf10)
+
+
+sim |>
+  ggplot() +
+    aes(x = t, y = jab/jzs, group = sample, color = jzs) +
+    # aes(x = t, y = bf10, color = estimate, group = interaction(estimate, sample), linetype = sample) +
+    geom_hline(yintercept = 1, linetype = "22") +
+    geom_hline(yintercept = c(1/3, 3), linetype = "dotted") +
+    geom_point(aes(shape = sample)) +
+    scale_color_continuous(
+      trans = "log"
+      , breaks = c(1,  3, 10, 30, 100)
+    ) +
+    scale_y_continuous(
+        trans = "log"
+        , breaks = c(1, 3, 10, 30, 100, 300)
+        , labels = MASS::fractions
+    ) +
+    facet_wrap(~ neff)
+```
+
+From this is looks like that we see systimatically more bias in the independent sample $t$-test, but that this bias is reduced by increasing the effective sample size.
+As the following plot shows, the balance between sample sizes is also relevant.
+If effective sample size increases, but the imbalance between samples increases as well, the bais in the independent sample $t$-test increases.
+
+```{r}
+sim <- expand.grid(
+  t = seq(0, 4, 0.1)
+  , n2 = c(5, 10, 30, 100, 300, 1000)
+) |>
+  dplyr::mutate(n1 = 5) |>
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    jzs_2 = exp(BayesFactor::ttest.tstat(t, n1, n2)$bf)
+    , p_2 = 2 * (1-pt(t, df = n1 + n2 - 2))
+    , neff = jab::ess(n1, n2)
+    , jab_2 = 1/jab:::.jab01_w_a_n(qnorm(p_2/2)^2, a = 1, n = neff)
+  ) |>
+  dplyr::mutate(
+    jzs_1 = exp(BayesFactor::ttest.tstat(t, n1/2)$bf)
+    , p_1 = 2 * (1-pt(t, df = n1/2 - 1))
+    , jab_1 = 1/jab:::.jab01_w_a_n(qnorm(p_1/2)^2, a = 1, n = n1/2)
+  ) |>
+  tidyr::pivot_longer(cols = c(jzs_2, jzs_1, jab_2, jab_1), names_to = "estimate", values_to = "bf10") |>
+  tidyr::separate_wider_delim(estimate, delim = "_", names = c("estimate", "sample")) |>
+  tidyr::pivot_wider(names_from = estimate, values_from = bf10)
+
+
+sim |>
+  ggplot() +
+    aes(x = t, y = jab/jzs, group = sample, color = jzs) +
+    # aes(x = t, y = bf10, color = estimate, group = interaction(estimate, sample), linetype = sample) +
+    geom_hline(yintercept = 1, linetype = "22") +
+    geom_hline(yintercept = c(1/3, 3), linetype = "dotted") +
+    geom_point(aes(shape = sample)) +
+    scale_color_continuous(
+      trans = "log"
+      , breaks = c(1,  3, 10, 30, 100)
+    ) +
+    scale_y_continuous(
+        trans = "log"
+        , breaks = c(1, 3, 10, 30, 100, 300)
+        , labels = MASS::fractions
+    ) +
+    facet_wrap(~ neff)
+```
+
+
+
+
+```{r}
+sim <- expand.grid(
+  p = seq(qnorm(0.0001), qnorm(0.9999), length.out = 40) |>
+    pnorm()
+  , n1 = c(5, 10, 30, 100, 300, 1000)
+) |>
+  dplyr::mutate(n2 = n1) |>
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    t_2 = qt(p/2, df = n1 + n2 - 2)
+    , jzs_2 = exp(BayesFactor::ttest.tstat(t_2, n1, n2)$bf)
+    , neff = jab::ess(n1, n2)
+    , jab_2 = 1/jab:::.jab01_w_a_n(qnorm(p/2)^2, a = 1, n = neff)
+  ) |>
+  dplyr::mutate(
+    , t_1 = qt(p/2, df = n1 - 1)
+    , jzs_1 = exp(BayesFactor::ttest.tstat(t_1, n1/2)$bf)
+    , jab_1 = 1/jab:::.jab01_w_a_n(qnorm(p/2)^2, a = 1, n = n1/2)
+  ) |>
+  tidyr::pivot_longer(cols = c(jzs_2, jzs_1, jab_2, jab_1), names_to = "estimate", values_to = "bf10") |>
+  tidyr::separate_wider_delim(estimate, delim = "_", names = c("estimate", "sample")) |>
+  tidyr::pivot_wider(names_from = estimate, values_from = bf10)
+
+
+sim |>
+  ggplot() +
+    aes(x = p, y = jab/jzs, group = sample, color = jzs) +
+    # aes(x = t, y = bf10, color = estimate, group = interaction(estimate, sample), linetype = sample) +
+    geom_hline(yintercept = 1, linetype = "22") +
+    geom_hline(yintercept = c(1/3, 3), linetype = "dotted") +
+    geom_point(aes(shape = sample)) +
+    scale_color_continuous(
+      trans = "log"
+      , breaks = c(1,  3, 10, 30, 100)
+    ) +
+    scale_x_continuous(
+        trans = "probit"
+        , breaks = c(0, 0.001, 0.05, 0.5, 1)
+        , 
+    ) +
+    scale_y_continuous(
+        trans = "log"
+        , breaks = c(1, 3, 10, 30, 100, 300)
+        , labels = MASS::fractions
+    ) +
+    facet_wrap(~ neff)
+```
+
+
+```{r}
+sim <- expand.grid(
+  p = seq(qnorm(0.0001), qnorm(0.9999), length.out = 40) |>
+    pnorm()
+  , n2 = c(5, 10, 30, 100, 300, 1000)
+) |>
+  dplyr::mutate(n1 = 5) |>
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    t_2 = qt(p/2, df = n1 + n2 - 2)
+    , jzs_2 = exp(BayesFactor::ttest.tstat(t_2, n1, n2)$bf)
+    , neff = jab::ess(n1, n2)
+    , jab_2 = 1/jab:::.jab01_w_a_n(qnorm(p/2)^2, a = 1, n = neff)
+  ) |>
+  dplyr::mutate(
+    , t_1 = qt(p/2, df = n1 - 1)
+    , jzs_1 = exp(BayesFactor::ttest.tstat(t_1, n1/2)$bf)
+    , jab_1 = 1/jab:::.jab01_w_a_n(qnorm(p/2)^2, a = 1, n = n1/2)
+  ) |>
+  tidyr::pivot_longer(cols = c(jzs_2, jzs_1, jab_2, jab_1), names_to = "estimate", values_to = "bf10") |>
+  tidyr::separate_wider_delim(estimate, delim = "_", names = c("estimate", "sample")) |>
+  tidyr::pivot_wider(names_from = estimate, values_from = bf10)
+
+
+sim |>
+  ggplot() +
+    aes(x = p, y = jab/jzs, group = sample, color = jzs) +
+    # aes(x = t, y = bf10, color = estimate, group = interaction(estimate, sample), linetype = sample) +
+    geom_hline(yintercept = 1, linetype = "22") +
+    geom_hline(yintercept = c(1/3, 3), linetype = "dotted") +
+    geom_point(aes(shape = sample)) +
+    scale_color_continuous(
+      trans = "log"
+      , breaks = c(1,  3, 10, 30, 100)
+    ) +
+    scale_x_continuous(
+        trans = "probit"
+        , breaks = c(0, 0.001, 0.05, 0.5, 1)
+        , 
+    ) +
+    scale_y_continuous(
+        trans = "log"
+        , breaks = c(1, 3, 10, 30, 100, 300)
+        , labels = MASS::fractions
+    ) +
+    facet_wrap(~ neff)
+```
+
+
+
+```{r}
+sim <- expand.grid(
+  t = seq(0, 4, 0.1)
+  , df = c(5, 10, 30, 100, 300, 1000)
+) |>
+  dplyr::mutate(
+    n_1 = (df + 1)
+    , n_2 = (df - 1) / 2
+  ) |>
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    jzs_2 = exp(BayesFactor::ttest.tstat(t, n_2, n_2)$bf)
+    , p_2 = 2 * (1-pt(t, df = 2*n_2 - 2))
+    , neff = jab::ess(n_2, n_2)
+    , jab_2 = 1/jab:::.jab01_w_a_n(qnorm(p_2/2)^2, a = 1, n = neff)
+  ) |>
+  dplyr::mutate(
+    jzs_1 = exp(BayesFactor::ttest.tstat(t, n_1)$bf)
+    , p_1 = 2 * (1-pt(t, df = n_1 - 1))
+    , jab_1 = 1/jab:::.jab01_w_a_n(qnorm(p_1/2)^2, a = 1, n = n_1)
+  ) |>
+  tidyr::pivot_longer(cols = c(jzs_2, jzs_1, jab_2, jab_1), names_to = "estimate", values_to = "bf10") |>
+  tidyr::separate_wider_delim(estimate, delim = "_", names = c("estimate", "sample")) |>
+  tidyr::pivot_wider(names_from = estimate, values_from = bf10)
+
+
+sim |>
+  ggplot() +
+    aes(x = t, y = jab/jzs, group = sample, color = jzs) +
+    # aes(x = t, y l= bf10, color = estimate, group = interaction(estimate, sample), linetype = sample) +
+    geom_hline(yintercept = 1, linetype = "22") +
+    geom_hline(yintercept = c(1/3, 3), linetype = "dotted") +
+    geom_point(aes(shape = sample)) +
+    scale_color_continuous(
+      trans = "log"
+      , breaks = c(1,  3, 10, 30, 100)
+    ) +
+    scale_y_continuous(
+        trans = "log"
+        , breaks = c(1, 3, 10, 30, 100, 300)
+        , labels = MASS::fractions
+    ) +
+    facet_wrap(~ df)
+```
+
+
+Here we hold $df$ constant and adjust the prior on the independent sample $t$-test according to $g' = g \frac{N_a}{N_b}$.
+
+```{r}
+sim <- expand.grid(
+  t = seq(0, 4, 0.1)
+  , df = c(5, 10, 30, 100, 300, 1000)
+) |>
+  dplyr::mutate(
+    n_1 = (df + 1)
+    , n_2 = (df - 1) / 2
+  ) |>
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    neff = jab::ess(n_2, n_2)
+    , jzs_2 = exp(BayesFactor::ttest.tstat(t, n_2, n_2, rscale = sqrt(n_1/neff))$bf) * sqrt(pi/2) *2
+    , p_2 = 2 * (1-pt(t, df = df))
+    , jab_2 = 1/jab:::.jab01_w_a_n(qnorm(p_2/2)^2, a = 1, n = neff)
+  ) |>
+  dplyr::mutate(
+    jzs_1 = exp(BayesFactor::ttest.tstat(t, n_1, rscale = 1)$bf) * sqrt(pi/2)
+    , p_1 = 2 * (1-pt(t, df = df))
+    , jab_1 = 1/jab:::.jab01_w_a_n(qnorm(p_1/2)^2, a = 1, n = n_1)
+  ) |>
+  tidyr::pivot_longer(cols = c(jzs_2, jzs_1, jab_2, jab_1), names_to = "estimate", values_to = "bf10") |>
+  tidyr::separate_wider_delim(estimate, delim = "_", names = c("estimate", "sample")) |>
+  tidyr::pivot_wider(names_from = estimate, values_from = bf10)
+
+sim |>
+  ggplot() +
+    aes(x = t, y = jab/jzs, group = sample, color = jzs) +
+    # aes(x = t, y l= bf10, color = estimate, group = interaction(estimate, sample), linetype = sample) +
+    geom_hline(yintercept = 1, linetype = "22") +
+    geom_hline(yintercept = c(1/3, 3), linetype = "dotted") +
+    # facet_wrap(~ neff)
+    geom_point(aes(shape = sample)) +
+    scale_color_continuous(
+      trans = "log"
+      , breaks = c(1,  3, 10, 30, 100)
+    ) +
+    scale_y_continuous(
+        trans = "log"
+        , breaks = c(1, 3, 10, 30, 100, 300)
+        , labels = MASS::fractions
+    ) +
+    facet_wrap(~ df)
+```
+
+With this adjustment JAB is larger than JZS by a factor of $\sqrt{\pi/2}$ for the one-sample $t$-test and by a factor of $2\sqrt{\pi/2}$ for the two-sample $t$-test.
+So still the two tests disagree by a factor of 2...
+
+The difference in the Bayes factors amounts to the relative heights of their priors at the test value $\theta_0 = 0$, i.e., $\mathcal{N}(0, 1)$ and $\mathcal{C}(0, 1)$
+
+$$
+\begin{aligned}
+\sqrt{\pi/2} & = \frac{\mathcal{N}(0 | \mu = 0, \sigma = 1)}{\mathcal{C}(0 | x_0 = 0, \gamma = 1)} \\
+& = \frac{1 / \sqrt{2\pi\sigma^2}}{1/\pi\gamma}
+\end{aligned}
+$$
+
+Is the factor 2 related to the fact that the unit information prior in the independent-sample $t$-test relates to the variance of the difference, which should be twice as high? The factor 2 falls out of a unit information prior with half the standard deviation as the one-sample test.
+
+$$
+\begin{aligned}
+2\sqrt{\pi/2} & = \frac{\mathcal{N}(0 | \mu = 0, \sigma = 0.5)}{\mathcal{C}(0 | x_0 = 0, \gamma = 1)} \\
+& = \frac{1 / \sqrt{2\pi\sigma^2}}{1/\pi\gamma}
+\end{aligned}
+$$
+
+# Validation of the Bayes factor
+
+- One specific point (ideally balanced)
+
+- Compare to standard normal prior (small and large $n$)
+- Stan/SD implementation
+- Full JAB approximation
+- Verify implementation in BayesFactor
+
+
+```{r}
+jzs_nc  <- function(x, t, n, nu, r) {
+  g <- invgamma::dinvgamma(x, shape = 1/2, scale = 1/2 * r)
+  (1 + n*g)^(-1/2) * (1 + t^2/((1 + n*g) * nu))^(-(nu + 1)/2) *
+  (2 * pi)^(-1/2) * g^(-3/2) * exp(-1/(2*g))
+}
+
+jzs_bf <- function(t, n, nu, r) {
+  ll <- (1 + t^2/nu)^(-(nu + 1)/2)
+  const <- integrate(\(x) jzs_nc(x, t, n, nu, r), 0.01, Inf)$value
+
+  ll-const
+}
+
+1/jzs_bf(t = 1, n = 10, nu = 9, r = 1) 
+
+exp(BayesFactor::ttest.tstat(t = 1, n1 = 10, rscale = 1)$bf)
+```
+
+Recreate simulation: https://www.ejwagenmakers.com/2009/WetzelsEtAl2009Ttest.pdf
+
+
+# Difference between one- and two-sample tests
+
+```{r}
+div_ps <- p_data |>
+  dplyr::filter(type == "Independent samples" & bf01 < 1/10) |>
+  dplyr::mutate(diff = bf01 - jab) |> 
+  dplyr::filter(neff == max(neff)) |>
+  dplyr::pull(p)
+
+divs <- dplyr::filter(p_data, round(p, 5) == round(div_ps, 5))
+```
+
+```{r}
+divs |>
+  dplyr::mutate(
+    bf10 = 1/bf01
+    , jab = 1/jab
+  ) |>
+  dplyr::select(type, tvalue, p, neff, n1, n2, bf10, jab, bicbf) |>
+  knitr::kable()
+```
+
+## One sample $t$-test
+
+I will first explore the results for the one-sample $t$-test.
+Based on the reported $t$ value and sample size, I calculate the JZS-Bayes factor via the **BayesFactor** package from the summary statistics and by generating synthetic data as quantiles from a normal distribution with mean and standard deviation corresponding the the $t$ value.
+
+```{r}
+one_sample <- dplyr::filter(divs, type == "Paired samples")
+```
+
+### BayesFactor
+
+We see here that the Bayes factors are identical.
+
+```{r}
+tvalue <- one_sample$tvalue
+n <- one_sample$n1
+mu <- tvalue / sqrt(n)
+sigma <- 1
+
+y <- qnorm(ppoints(n), mean = mu, sd = sigma)
+y <- (y - mean(y)) / sd(y) + mu
+
+t_test <- t.test(y)
+
+BayesFactor::ttest.tstat(t = tvalue, n1 = n, rscale = 1)$bf |>
+  exp()
+
+# BayesFactor::ttest.tstat(t = t_test$statistic, n1 = n, rscale = 1)$bf |>
+#   exp()
+
+BayesFactor::ttestBF(y, rscale = 1)
+```
+
+### JAB and BIC as used thus far
+
+For comparison, I calculate the JAB approximation and the BIC approximation as used thus far.
+Specifically, for JAB I use the simplified formula assuming $A = 1$.
+
+```{r}
+1/jab:::.jab01_w_a_n(
+  w = qnorm(one_sample$p/2)^2
+  , a = 1
+  , n = n
+)
+```
+
+While the approximations yield similar results, they indicate somewhat stronger evidence than the JZS-Bayes factor.
+The following illustrates, that the difference between JAB and BIC is due to the likelihood approximation used in JAB, because
+
+$$
+\exp((2 \Delta_{\log \mathcal{L}} - \log n) / 2) = \exp(\Delta_{\log \mathcal{L}} - 0.5\log n) = \frac{1}{\sqrt{n} \exp(-\log\mathcal{L})},
+$$
+
+where the former is the typical BIC formula and the latter the JAB formula.
+ 
+```{r}
+# ll <- logLik(lm(y / sd(y) ~ 1)) - 
+#       logLik(lm(y / sd(y) ~ 0))
+
+ll <- n / 2 * log(1 + tvalue^2 / (n-1)) # Stuart & Kendal (1961, p. 225)
+
+jab_ll <- 0.5 * qnorm(one_sample$p/2)^2
+
+exp((-log(n) + 2 * ll) / 2)   # BIC formula
+1/(sqrt(n) * exp(-ll))  # JAB formula
+
+exp((-log(n) + 2 * jab_ll) / 2)   # BIC formula
+1/(sqrt(n) * exp(-jab_ll))  # JAB formula
+```
+
+This, in turn, means that JAB assuming $A = 1$ implies a unit-information prior centered on $\hat\theta$.
+Here I make this explicit throught he full JAB approximation.
+
+```{r}
+# 1/jab:::.jab01(
+#   z = qnorm(one_sample$p/2)
+#   , g = dnorm(mu, mean = mu, sd = sigma)
+#   , se = sigma / sqrt(n)
+# )
+
+1/jab:::.jab01(
+  z = qnorm(one_sample$p/2)
+  , g = dnorm(mu/sigma, mean = mu/sigma, sd = 1)
+  , se = 1 / sqrt(n)
+)
+```
+
+Because the JZS-Bayes factor reflects a prior centered on 0, a more direct comparison to the approximations requires a prior centered on $\theta_0 = 0$.
+
+```{r}
+# 1/jab:::.jab01(
+#   z = qnorm(one_sample$p/2)
+#   , g = dnorm(mu, mean = 0, sd = sigma)
+#   , se = sigma / sqrt(n)
+# )
+
+1/jab:::.jab01(
+  z = qnorm(one_sample$p/2)
+  , g = dnorm(mu / sigma, mean = 0, sd = 1)
+  , se = 1 / sqrt(n)
+)
+```
+
+The alternative assumption of $A = \sqrt{\pi/2}$ suggested by Jeffreys's in the simplified JAB formula corresponds to this prior setting.
+
+```{r}
+1/jab:::.jab01_w_a_n(
+  w = qnorm(one_sample$p/2)^2
+  , a = sqrt(pi/2)
+  , n = n
+)
+```
+
+So this must be where the bias factor of $\sqrt{\pi/2}$ that we saw in the above simulation comes from.
+
+```{r}
+1/jab:::.jab01_w_a_n(
+  w = qnorm(one_sample$p/2)^2 / (n / (n - 0.5))
+  , a = sqrt(pi/2)
+  , n = n
+)
+```
+
+
+```{r}
+sim <- expand.grid(
+  t = seq(0, 4, 0.1)
+  , df = c(5, 10, 30, 100, 300, 1000)
+) |>
+  dplyr::mutate(
+    n_1 = (df + 1)
+    , n_2 = (df - 1) / 2
+  ) |>
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    neff = jab::ess(n_2, n_2)
+    , jzs_2 = exp(BayesFactor::ttest.tstat(t, n_2, n_2, rscale = sqrt(n_1/neff))$bf)
+    , p_2 = 2 * (1-pt(t, df = df))
+    , jab_2 = 1/jab:::.jab01_w_a_n(qnorm(p_2/2)^2, a = sqrt(pi/2), n = neff)
+  ) |>
+  dplyr::mutate(
+    jzs_1 = exp(BayesFactor::ttest.tstat(t, n_1, rscale = 1)$bf)
+    , p_1 = 2 * (1-pt(t, df = df))
+    , jab_1 = 1/jab:::.jab01_w_a_n(qnorm(p_1/2)^2, a = sqrt(pi/2), n = n_1)
+  ) |>
+  tidyr::pivot_longer(cols = c(jzs_2, jzs_1, jab_2, jab_1), names_to = "estimate", values_to = "bf10") |>
+  tidyr::separate_wider_delim(estimate, delim = "_", names = c("estimate", "sample")) |>
+  tidyr::pivot_wider(names_from = estimate, values_from = bf10)
+
+sim |>
+  ggplot() +
+    aes(x = t, y = jab/jzs, group = sample, color = jzs) +
+    # aes(x = t, y l= bf10, color = estimate, group = interaction(estimate, sample), linetype = sample) +
+    geom_hline(yintercept = 1, linetype = "22") +
+    geom_hline(yintercept = c(1/3, 3), linetype = "dotted") +
+    # facet_wrap(~ neff)
+    geom_point(aes(shape = sample)) +
+    scale_color_continuous(
+      trans = "log"
+      , breaks = c(1,  3, 10, 30, 100)
+    ) +
+    scale_y_continuous(
+        trans = "log"
+        , breaks = c(1, 3, 10, 30, 100, 300)
+        , labels = MASS::fractions
+    ) +
+    facet_wrap(~ df)
+```
+
+So, we may want to switch to this setting for the comparison in the paper.
+
+As an aside, this also means that we can apply the same correction factor to the BIC approximation to avoid using a prior centered on the MLE.
+
+Okay, so we should get even better agreement, if we use Cauchy prior in JAB rather than the standard normal.
+Interestingly this is only the case if we use the exact likelihood ratio!
+
+```{r}
+1/jab:::.jab01(
+  w = qchisq(1 - one_sample$p, df = 1)
+  , g = dcauchy(mu / sigma, scale = 1)
+  , se = 1 / sqrt(n)
+)
+
+1/jab:::.jab01(
+  w = 2 * ll
+  , g = dcauchy(mu / sigma, scale = 1)
+  , se = 1 / sqrt(n)
+)
+```
+
+In sum, it seems best to either use the full approximation with the exact likelihood ratio or the approximate likelihood ratio based on $p$ with $A = sqrt{\pi/2}$
+
+### bayesplay
+
+Using the **bayesplay** package, I calculated the Bayes factor for the one-sample $t$-test from the likelihood and prior, again based on the summary statistics.
+The advantage of this approach is that it allows for a more flexible specification of the prior.
+
+#### Cauchy prior
+
+First, here are the calculations for the Cauchy prior on $d$.
+The combination of the following approaches all yield identical results (as per the vignettes of the **bayesplay** package):
+
+Likelihood parameterization in terms of 
+
+1. $t$ (a non-central $t$-distribution)
+2. $d$ (a scaled non-central $t$-distribution)
+
+Bayes factor calculation 
+
+3. directly as ratio of the  marginal likelihoods
+4. approximately via the Savage-Dickey density ratio
+
+```{r}
+library("bayesplay")
+
+os_lt <- likelihood(family = "noncentral_t", t = tvalue, df = n - 1)
+os_p1t <- prior(family = "cauchy", location = 0, scale = 1 * sqrt(n))
+os_p0 <- prior(family = "point", point = 0)
+
+integral(os_lt * os_p1t) / integral(os_lt * os_p0)
+
+
+os_ld <- likelihood(family = "noncentral_d", d = mu / sigma, n = n)
+os_p1d <- prior(family = "cauchy", location = 0, scale = 1)
+
+integral(os_ld * os_p1d) / integral(os_ld * os_p0)
+
+
+extract_posterior(os_ld * os_p1d) |>
+  sd_ratio(point = 0)
+```
+
+```{r}
+extract_posterior(os_ld * os_p1d) |> 
+  plot(add_prior = TRUE) +
+  geom_vline(xintercept = 0) +
+  # geom_vline(xintercept = mu, linetype = "22") +
+  labs(x = bquote(italic(d)), y = "Density") +
+  theme_minimal()
+```
+
+
+#### Normal prior
+
+To explore the difference between the JZS-Bayes factor and the JAB approximation, we can use a normal prior on $d$ to put analytic results and approximation on equal footing.
+
+First, these are the results for the standard normal prior on $d$, i.e. a unit-information prior centered on 0.
+The Bayes factor is much closer to the JAB and BIC approximations.
+
+```{r}
+os_ld <- likelihood(family = "noncentral_d", d = mu / sigma, n = n)
+os_p1d <- prior(family = "normal", mean = 0, sd = 1)
+
+integral(os_ld * os_p1d) / integral(os_ld * os_p0)
+```
+
+This corresponds to the analytic result (Gönen et al., 2005).
+
+```{r}
+# Gronau, Ly & Wagenmakers (2020, eq. 3) taken from Gönen et al. (2005)
+g <- 1
+x <- 1 / (sqrt(1 + n * g))
+x * dt(tvalue * x, df = n - 1) / dt(tvalue, df = n - 1)
+```
+
+```{r}
+extract_posterior(os_ld * os_p1d) |> 
+  plot(add_prior = TRUE) +
+  geom_vline(xintercept = 0) +
+  # geom_vline(xintercept = mu, linetype = "22") +
+  geom_point(
+    aes(
+      x = mu/sigma
+      , y = dnorm(mu / sigma, mean = 0, sd = 1)
+    )
+    , size = 2
+  ) +
+  labs(x = bquote(italic(d)), y = "Density") +
+  theme_minimal()
+```
+
+Oddly, now the corresponding JAB is further away from the Bayes factor.
+
+```{r}
+1/jab:::.jab01_w(
+  w = qnorm(one_sample$p/2)^2
+  , g = dnorm(mu / sigma, mean = 0, sd = 1)
+  , se = 1 / sqrt(n)
+)
+```
+
+The likelihood approximation appears to contribute to this discrepancy, but cannot explain all of the difference.
+Using the exact BIC approximation for the likelihood, the JAB approximation is still slightly off.
+
+```{r}
+1/jab:::.jab01_w(
+  w = 2 * ll
+  , g = dnorm(mu / sigma, mean = 0, sd = 1)
+  , se = 1 / sqrt(n)
+)
+```
+
+# Interim results
+
+Based on this I have recreated our figure for JAB assuming $A = \sqrt{pi/2}$ and replacing the likelihood approximation based on the PDF of $\chi^2$ by the analytic solution for $t$-tests (e.g., Francis, 2016, 2022).
+It's clear that these measures have largely eliminated the offset but the slope <1 remains.
+
+
+```{r}
+#| fig-height: 7
+#| fig-width: 7.7
+
+(p_data2 |>
+  ggplot() +
+    aes(y = bf01) +
+    geom_point(aes(x = jab, fill = neff, shape = "jab"), color = "white", size = 3) +
+    geom_abline(slope = 1, intercept = 0, linetype = "22") +
+    scale_shape_manual(values = c(21, 24), labels = c(bquote("JAB"["01"]), bquote("One-sided"~italic(p))), name = "\nApproximation", guide = guide_legend(override.aes = list(fill = "black", size = 4), reverse = TRUE)) +
+    scale_fill_viridis_c(option = "F", begin = 0.3, end = 0.8, direction = -1, trans = "log", breaks = c(2, 5, 10, 20, 50, 125, 300), name = "\nn") +
+    scale_x_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+    ) +
+    scale_y_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+    ) +
+    coord_fixed(ratio = 1) +
+    labs(x = "Approximation", y = bquote("JZS-"*BF["01"])) +
+    facet_wrap(~ type, ncol = 2) +
+    papaja::theme_apa(base_size = 16, box = TRUE) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1)
+      , legend.box = "horizontal"
+      , legend.title = element_text(hjust = 0.5)
+      , legend.margin = margin(0, 4, 0, 4)
+    )) |>
+    lemon::reposition_legend(
+      position = "center"
+      , panel = "panel-2-2"
+    )
+```
+
+
+```{r}
+lbf_lm <- dplyr::mutate(
+  p_data2
+  , ljab = log(jab)
+) |>
+  lm(
+    log(bf01) ~ log(jab) * scale(neff, scale = FALSE) * type
+    , data = _
+  )
+
+car::Anova(lbf_lm, type = 3) |>
+  knitr::kable()
+
+ggeffects::ggpredict(
+  lbf_lm
+  , terms = c("jab [all]", "neff [2, 5, 10, 25]",  "type")
+  , back_transform = TRUE
+) |>
+  plot(rawdata = TRUE) +
+    geom_abline(intercept = 0, slope = 1, linetype = "22") +
+    scale_x_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+    ) +
+    scale_y_continuous(
+      trans = "log"
+      , breaks = bf_breaks
+      , labels = bf_labels
+      , limits = c(1/50, 10)
+    ) +
+    facet_wrap(~ facet, ncol = 2) +
+    papaja::theme_apa()
+```
+
+<!--
+
+```{r}
+os_ld <- likelihood(family = "normal", mean = mu, sd = n)
+os_p1d <- prior(family = "normal", mean = 0, sd = sigma)
+# os_p1d <- prior(family = "cauchy", location = 0, scale = 1 * sqrt(n))
+integral(os_ld * os_p1d) / integral(os_ld * os_p0)
+
+
+z <- mu * sqrt(n-1) / sigma
+os_ld <- likelihood(family = "normal", mean = z, sd = 1)
+os_p1d <- prior(family = "normal", mean = 0, sd = 1)
+integral(os_ld * os_p1d) / integral(os_ld * os_p0)
+
+1/jab:::.jab01(
+  z = mu * sqrt(n) / sigma
+  , g = dnorm(mu, mean = 0, sd = 1*sqrt(n))
+  , se = sigma / sqrt(n)
+)
+```
+
+```{r}
+p0 <- likelihood(family = "noncentral_d", d = mu / sigma, n = n) |>
+  plot() +
+  lims(x = c(-0.5, 2))
+
+p1 <- likelihood(family = "normal", mean = mu / sigma, sd = 1/sqrt(n) * sqrt(pi/2)) |>
+  plot() +
+  lims(x = c(-0.5, 2))
+
+library("patchwork")
+
+p0 / p1 + plot_layout(axes = "collect")
+```
+
+
+
+
+
+```{r}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+## Bayeds 
+
+# Stan vs. BayesFactor
+
+```{r}
+library("rstan")
+library("bridgesampling")
+
+n <- 100
+t <- 1
+sigma <- 1
+mu <- t/sqrt(n)
+
+y <- qnorm(ppoints(n), mean = mu, sd = sigma)
+
+t_test <- t.test(y)
+
+# models
+stancodeH0 <- '
+data {
+  int<lower=1> n; // number of observations
+  vector[n] y; // observations
+}
+parameters {
+  real<lower=0> sigma2; // variance parameter
+}
+model {
+  target += log(1/sigma2); // Jeffreys prior on sigma2
+  target += normal_lpdf(y | 0, sqrt(sigma2)); // likelihood
+}
+'
+stancodeH1 <- '
+data {
+  int<lower=1> n; // number of observations
+  vector[n] y; // observations
+  real<lower=0> r; // Cauchy prior scale
+}
+parameters {
+  real delta;
+  real<lower=0> sigma2;// variance parameter
+}
+model {
+  target += cauchy_lpdf(delta | 0, r); // Cauchy prior on delta
+  target += log(1/sigma2); // Jeffreys prior on sigma2
+  target += normal_lpdf(y | delta*sqrt(sigma2), sqrt(sigma2));  // likelihood
+}
+'
+# compile models
+stanmodelH0 <- stan_model(model_code = stancodeH0, model_name="stanmodel")
+stanmodelH1 <- stan_model(model_code = stancodeH1, model_name="stanmodel")
+
+
+# fit models
+stanfitH0 <- sampling(stanmodelH0, data = list(y = y, n = n),
+                      iter = 20000, warmup = 1000, chains = 4, cores = 1,
+                      control = list(adapt_delta = .99))
+stanfitH1 <- sampling(stanmodelH1, data = list(y = y, n = n, r = 1/sqrt(2)),
+                      iter = 20000, warmup = 1000, chains = 4, cores = 1,
+                      control = list(adapt_delta = .99))
+
+H0 <- bridge_sampler(stanfitH0, silent = TRUE)
+H1 <- bridge_sampler(stanfitH1, silent = TRUE)
+
+bf(H1, H0)
+BayesFactor::ttestBF(y, rscale = 1/sqrt(2))
+BayesFactor::ttest.tstat(t = t.test(y)$statistic, n1 = n, rscale = 1/sqrt(2))$bf |>
+  exp()
+```
+
+
+# One-sample $t$-test
+
+
+
+# Bayes play
+
+```{r}
+
+
+
+```
+
+# Stan implementation
+
+```{r}
+n <- 100
+t <- 1
+sigma <- 1
+mu <- t/sqrt((n^2)/(2*n))
+
+y1 <- qnorm(ppoints(n), mean = mu, sd = sigma)
+y2 <- qnorm(ppoints(n), mean = 0, sd = sigma)
+
+t_test <- t.test(y1, y2)
+
+
+# models
+stancodeH0 <- '
+data {
+  int<lower=1> n1; // number of observations
+  int<lower=1> n2; // number of observations
+  vector[n] y1; // observations
+  vector[n] y2; // observations
+}
+parameters {
+  real mu;
+  real<lower=0> sigma2; // variance parameter
+}
+model {
+  target += log(1/sigma2); // Jeffreys prior on sigma2
+  target += normal_lpdf(y1 | mu, sqrt(sigma2)); // likelihood
+  target += normal_lpdf(y2 | mu, sqrt(sigma2)); // likelihood
+}
+'
+stancodeH1 <- '
+data {
+  int<lower=1> n; // number of observations
+  vector[n] y; // observations
+  real<lower=0> r; // Cauchy prior scale
+}
+parameters {
+  real delta;
+  real<lower=0> sigma2;// variance parameter
+}
+model {
+  target += cauchy_lpdf(delta | 0, r); // Cauchy prior on delta
+  target += log(1/sigma2); // Jeffreys prior on sigma2
+  target += normal_lpdf(y | delta*sqrt(sigma2), sqrt(sigma2));  // likelihood
+}
+'
+# compile models
+stanmodelH0 <- stan_model(model_code = stancodeH0, model_name="stanmodel")
+stanmodelH1 <- stan_model(model_code = stancodeH1, model_name="stanmodel")
+
+
+# fit models
+stanfitH0 <- sampling(stanmodelH0, data = list(y = y, n = n),
+                      iter = 20000, warmup = 1000, chains = 4, cores = 1,
+                      control = list(adapt_delta = .99))
+stanfitH1 <- sampling(stanmodelH1, data = list(y = y, n = n, r = 1/sqrt(2)),
+                      iter = 20000, warmup = 1000, chains = 4, cores = 1,
+                      control = list(adapt_delta = .99))
+
+H0 <- bridge_sampler(stanfitH0, silent = TRUE)
+H1 <- bridge_sampler(stanfitH1, silent = TRUE)
+
+bf(H1, H0)
+BayesFactor::ttestBF(y1, rscale = 1/sqrt(2))
+BayesFactor::ttest.tstat(t = t_test$statistic, n1 = n, rscale = 1/sqrt(2))$bf |>
+  exp()
+```
+
+-->

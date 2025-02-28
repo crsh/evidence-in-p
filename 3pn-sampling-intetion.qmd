@@ -1,0 +1,129 @@
+---
+title: "The $3p\sqrt{n}$-rule requires uncorrected $p$-values assuming a fixed-N sampling plan"
+author: "Frederik Aust"
+date: "`r Sys.Date()`"
+
+toc: true
+number-sections: true
+reference-location: margin
+
+highlight-style: github
+theme: lumen
+
+execute:
+  keep-md: true
+  echo: false
+
+format:
+  html:
+    standalone: true
+    embed-resources: true
+    self-contained: true
+    link-external-icon: true
+    citations-hover: true
+    footnotes-hover: true
+---
+
+It is a well known result in statistics that the Type 1 error rate, assuming a fixed-N sampling plan, is maintained in variable-N sampling plans.
+However, as Krushke (2015, Chapter 11) illustrates, for any given outcome the $p$ value differes dependingon the sampling intention of the experimenter.
+
+The approximate JAB obtained from the $3p\sqrt{n}$-rule inherits the assumption of a "vanilla" fixed-N $p$ value.
+This means that JAB cannot be directly applied to $p$-values calculated under different sampling assumptions, or corrected for multiple comparisons or optional stopping.
+
+## Different $p$ values for different sampling intentions
+
+Krushke (2015, Chapter 11) introduces the example of an experiment designed to determin if a coin is fair.
+The experimenter obtains $s = 7$ heads in $n = 24$ tosses.
+To test if the coin is fair, we conduct a one-sided test of the null hypothesis $H_0: p = 0.5$ against the alternative $H_1: p < 0.5$.
+As is typical, we assume that the intention of the experiment was to flip the coin exactly 24 times.
+
+```{r}
+#| label: binomia-test
+
+s <- 4
+n <- 24
+
+fixed_n_test <- binom.test(s, n, 0.5, alternative = "less")
+
+fixed_n_test
+```
+
+We see that the $p = `print_p(fixed_n_test$p.value)`$.
+We can replicate this result numerically by simulating the experiment 10,000 times.
+The simulated sampling distribution of $\hat{\theta}$ assuming a fixed-N sampling plan is shown in Figure \@ref(fig-sim-fixed-n).
+
+```{r}
+#| label: fig-sim-fixed-n
+#| fig-cap: "Simulated sampling distribution of $\hat{\theta}$ assuming a fixed-N sampling plan."
+
+I <- 1e6
+
+fixed_n <- replicate(
+  I
+  , rbinom(n, 1, 0.5) |>
+    mean()
+)
+
+fixed_n |>
+  table() |>
+  (\(x) x / I)() |>
+  plot(
+    , type = "h"
+    , xlab = bquote(hat(theta)),
+    , ylab = "Density"
+    , xlim = c(0, 1)
+    , lwd = 5
+    , col = "skyblue"
+  )
+  points(s/n, 0)
+```
+
+We confirm that, indeed, $p = `print_p(mean(fixed_n <= s/n))$.
+
+But what if the experimenter's intention was to flip the coin for a fixed duration rather than exactly 24 times?
+In this case, $n$ is a random variable, which affects the sampling distribution.
+The simulated sampling distribution of $\hat{\theta}$ assuming a variable-N sampling plan is shown in Figure \@ref(fig-sim-fixed-duration).
+
+```{r}
+#| label: fig-sim-fixed-duration
+#| fig-cap: "Simulated sampling distribution of $\hat{\theta}$ assuming a fixed-duration sampling plan."
+
+fixed_duration <- replicate(
+  I
+  , rpois(1, n) |>
+    rbinom(1, 0.5) |>
+    mean()
+)
+
+fixed_duration |>
+  table() |>
+  (\(x) x / I)() |>
+  plot(
+    , type = "h"
+    , xlab = bquote(hat(theta)),
+    , ylab = "Density"
+    , xlim = c(0, 1)
+    , lwd = 5
+    , col = "skyblue"
+  )
+  points(s/n, 0)
+```
+
+For this sampling intention we obtain $p = `print_p(mean(fixed_duration <= s/n))$.
+In other words, the $p$ value is different depending on the sampling intention of the experimenter.
+If the experimenter's intention was to flip the coin for a fixed duration, the $p$ value is larger than if the intention was to flip the coin exactly 24 times.
+Fortunately, this is not the case for the Bayes factor and by extension JAB and the $3p\sqrt{n}$-rule.
+
+```{r}
+1 / (dbeta(0.5, 1 + s, 1 + n - s) * (2*pbeta(0.5, 1 + s, 1 + n - s)))
+
+fixed_n_test <- binom.test(s, n, 0.5, alternative = "less")
+1 / jab::jab(fixed_n_test, prior = dbeta, shape1 = 1, shape2 = 1)
+
+1 / jab::jab_p(fixed_n_test$p.value, n / (s/n * (n-s)/n))
+1 / jab::jab_p(mean(fixed_n <= s/n), n / (s/n * (n-s)/n))
+1 / jab::jab_p(mean(fixed_duration <= s/n), n / (s/n * (n-s)/n))
+d
+curve(dbeta(x, 1 + s, 1 + n - s), 0, 1, col = "red")
+curve(dbeta(x, 1, 1), 0, 1, lty = "22", add = TRUE)
+```
